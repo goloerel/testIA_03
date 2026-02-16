@@ -1,85 +1,71 @@
+from typing import List, Optional
 from datetime import datetime
-from fastapi import HTTPException
-from src.database import db_client
-from src.models.assignment import Assignment, AssignmentStatus
-from src.models.driver import DriverStatus
-from typing import List
+from src.repositories.assignment_repository import AssignmentRepository
+from src.repositories.driver_repository import DriverRepository
+from src.repositories.vehicle_repository import VehicleRepository
+from src.schemas.assignment import AssignmentInput, Assignment, AssignmentStatus, AssignmentUpdate
+from src.core.exceptions import (
+    VehicleAlreadyAssignedError,
+    DriverAlreadyAssignedError,
+    AssignmentNotFoundError,
+    DriverNotFoundError,
+    VehicleNotFoundError
+)
 
 class AssignmentService:
-    def __init__(self):
-        self.assignment_collection = db_client.get_collection("assignments")
-        self.driver_collection = db_client.get_collection("drivers")
-        self.vehicle_collection = db_client.get_collection("vehicles")
+    def __init__(
+        self, 
+        assignment_repository: AssignmentRepository,
+        driver_repository: DriverRepository,
+        vehicle_repository: VehicleRepository
+    ):
+        self.assignment_repository = assignment_repository
+        self.driver_repository = driver_repository
+        self.vehicle_repository = vehicle_repository
 
-    def create_assignment(self, assignment: Assignment):
-        driver_id_str = str(assignment.driver_id)
-        vehicle_id_str = str(assignment.vehicle_id)
+    def create_assignment(self, input_data: AssignmentInput) -> Assignment:
+        # 1. Validate Existences
+        if not self.driver_repository.get_by_id(input_data.driver_id):
+            raise DriverNotFoundError(f"Driver {input_data.driver_id} not found.")
+            
+        if not self.vehicle_repository.get_by_id(input_data.vehicle_id):
+            raise VehicleNotFoundError(f"Vehicle {input_data.vehicle_id} not found.")
 
-        # 1. Validation: The Driver must exist and be INACTIVE.
-        driver = self.driver_collection.find_one({"id": driver_id_str})
-        if not driver:
-            raise HTTPException(status_code=400, detail="Driver does not exist")
-        if driver["status"] != DriverStatus.INACTIVE:
-            raise HTTPException(status_code=400, detail="Driver is not INACTIVE")
+        # 2. Validate Constraints (Active Assignments)
+        if self.assignment_repository.find_active_by_driver(input_data.driver_id):
+            raise DriverAlreadyAssignedError(f"Driver {input_data.driver_id} already has an active assignment.")
 
-        # 2. Multiplicity: A vehicle accepts up to 2 drivers.
-        # Check active assignments for this vehicle during this time range?
-        # The brief says "A vehicle accepts up to 2 drivers". 
-        # Usually this means at any given time.
-        overlapping_vehicle = self.assignment_collection.count_documents({
-            "vehicle_id": vehicle_id_str,
-            "status": {"$in": [AssignmentStatus.ACTIVE, AssignmentStatus.INACTIVE]},
-            "$or": [
-                {"start_date": {"$lt": assignment.end_date}, "end_date": {"$gt": assignment.start_date}}
-            ]
-        })
-        if overlapping_vehicle >= 2:
-            raise HTTPException(status_code=400, detail="Vehicle already has 2 drivers assigned for this period")
+        if self.assignment_repository.find_active_by_vehicle(input_data.vehicle_id):
+            raise VehicleAlreadyAssignedError(f"Vehicle {input_data.vehicle_id} already has an active assignment.")
 
-        # 3. Multiplicity: A driver has 0 time overlaps.
-        overlapping_driver = self.assignment_collection.find_one({
-            "driver_id": driver_id_str,
-            "status": {"$in": [AssignmentStatus.ACTIVE, AssignmentStatus.INACTIVE]},
-            "$or": [
-                {"start_date": {"$lt": assignment.end_date}, "end_date": {"$gt": assignment.start_date}}
-            ]
-        })
-        if overlapping_driver:
-            raise HTTPException(status_code=400, detail="Driver has overlapping assignments")
-
-        # 4. Time Trigger: If start_date == now, Driver and Assignment become ACTIVE.
-        now = datetime.now()
-        # Using a small threshold (e.g. 1 minute) or just checking if start_date <= now
-        if assignment.start_date <= now:
-            assignment.status = AssignmentStatus.ACTIVE
-            # Update driver status
-            self.driver_collection.update_one(
-                {"id": driver_id_str},
-                {"$set": {"status": DriverStatus.ACTIVE}}
-            )
-
-        assignment_dict = assignment.model_dump()
-        assignment_dict["id"] = str(assignment_dict["id"])
-        assignment_dict["driver_id"] = str(assignment_dict["driver_id"])
-        assignment_dict["vehicle_id"] = str(assignment_dict["vehicle_id"])
-
-        self.assignment_collection.insert_one(assignment_dict)
-        return assignment
-
-    def complete_assignment(self, assignment_id: str):
-        # 5. Completion: Upon completion, Driver returns to INACTIVE and Assignment to COMPLETED.
-        assignment = self.assignment_collection.find_one({"id": assignment_id})
-        if not assignment:
-            raise HTTPException(status_code=404, detail="Assignment not found")
+        # 3. Create
+        data = input_data.model_dump()
+        data["estado"] = AssignmentStatus.ACTIVE
+        data["fecha_creacion"] = datetime.now()
         
-        self.assignment_collection.update_one(
-            {"id": assignment_id},
-            {"$set": {"status": AssignmentStatus.COMPLETED, "end_date": datetime.now()}}
-        )
-        self.driver_collection.update_one(
-            {"id": assignment["driver_id"]},
-            {"$set": {"status": DriverStatus.INACTIVE}}
-        )
-        return {"message": "Assignment completed"}
+        created = self.assignment_repository.create(data)
+        return Assignment(**created)
 
-assignment_service = AssignmentService()
+    def get_assignment(self, id: str) -> Assignment:
+        doc = self.assignment_repository.get_by_id(id)
+        if not doc:
+            raise AssignmentNotFoundError(f"Assignment {id} not found.")
+        return Assignment(**doc)
+
+    def update_assignment(self, id: str, update_data: AssignmentUpdate) -> Assignment:
+        # Check existence
+        if not self.assignment_repository.get_by_id(id):
+            raise AssignmentNotFoundError(f"Assignment {id} not found.")
+
+        # Perform update
+        # Note: If updating status to COMPLETED, we might want validation, 
+        # but pure data update is allowed here as per schema.
+        updated = self.assignment_repository.update(id, update_data.model_dump(exclude_unset=True))
+        if not updated:
+             raise AssignmentNotFoundError(f"Assignment {id} not found during update.")
+             
+        return Assignment(**updated)
+    
+    def list_assignments(self, limit: int, offset: int) -> List[Assignment]:
+        docs = self.assignment_repository.list_assignments(limit, offset)
+        return [Assignment(**d) for d in docs]

@@ -1,12 +1,43 @@
 version: '3.8'
 
 services:
+  # Database Service
   db:
-    image: mongo:latest
+    image: mongo:6.0
+    container_name: fleet_mongo
     ports:
-      - "27017:27017"
+      - "27017:27017" # Expose to host for local testing/access
     volumes:
       - mongo_data:/data/db
+    networks:
+      - fleet_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 5s
+
+  # API Service
+  api:
+    build: .
+    container_name: fleet_api
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URL=mongodb://db:27017
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - .:/app # Hot-reload mapping
+    networks:
+      - fleet_network
 
 volumes:
   mongo_data:
+
+
+networks:
+  fleet_network:
+    driver: bridge

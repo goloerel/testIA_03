@@ -1,13 +1,20 @@
-FROM python:3.11
+FROM python:3.11-slim
+
 WORKDIR /app
 
-RUN pip install --upgrade pip
-RUN pip install fastapi==0.100.0
-RUN pip install uvicorn==0.22.0
-RUN pip install pymongo==4.4.1
-RUN pip install pydantic==2.0.0
-RUN pip install pytest==7.4.0
-RUN pip install pytest-cov==4.1.0
+# Install system dependencies (minimized)
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
 
+# Install python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
 COPY . .
+
+# Expose port (documentary)
+EXPOSE 8000
+
+# Command to run the application
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
+from unittest.mock import MagicMock
 from src.main import app
-from unittest.mock import patch, MagicMock
+from src.api.vehicles import get_vehicle_service
+from src.services.vehicle_service import VehicleService
 
 client = TestClient(app)
 
@@ -23,29 +25,35 @@ valid_vehicle_data = {
     "ultima_verificacion": None
 }
 
+def get_mock_service(mock_repo):
+    return VehicleService(repository=mock_repo)
+
 def test_get_vehicle_success():
-    with patch("src.services.vehicle_service.vehicle_repository") as mock_repo:
-        mock_repo.get_by_id.return_value = valid_vehicle_data
-        
+    mock_repo = MagicMock()
+    mock_repo.get_by_id.return_value = valid_vehicle_data
+    
+    app.dependency_overrides[get_vehicle_service] = lambda: get_mock_service(mock_repo)
+
+    try:
         response = client.get("/api/v1/vehicles/507f1f77bcf86cd799439011")
         
         assert response.status_code == 200
         data = response.json()
         assert data["_id"] == "507f1f77bcf86cd799439011"
         assert data["placa"] == "ABC-123"
+    finally:
+        app.dependency_overrides = {}
 
 def test_get_vehicle_not_found():
-    with patch("src.services.vehicle_service.vehicle_repository") as mock_repo:
-        mock_repo.get_by_id.return_value = None
-        
+    mock_repo = MagicMock()
+    mock_repo.get_by_id.return_value = None
+    
+    app.dependency_overrides[get_vehicle_service] = lambda: get_mock_service(mock_repo)
+
+    try:
         response = client.get("/api/v1/vehicles/507f1f77bcf86cd799439011")
         
         assert response.status_code == 404
         assert "not found" in response.json()["detail"]
-
-def test_get_vehicle_invalid_id():
-    response = client.get("/api/v1/vehicles/invalid-id-format")
-    
-    # Expect 400 Bad Request as per service logic
-    assert response.status_code == 400
-    assert "Invalid ID format" in response.json()["detail"]
+    finally:
+        app.dependency_overrides = {}

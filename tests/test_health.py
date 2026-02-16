@@ -12,7 +12,7 @@ def test_health_check_success():
     response = client.get("/health")
     # If DB is not up during test, this might fail unless we mock.
     # To be safe and test logic:
-    with patch("src.routes.health.db_client") as mock_db:
+    with patch("src.api.health.db_client") as mock_db:
         mock_db.client.admin.command.return_value = {"ok": 1}
         response = client.get("/health")
         assert response.status_code == 200
@@ -20,7 +20,7 @@ def test_health_check_success():
 
 def test_health_check_failure():
     # Mocking the database connection failure
-    with patch("src.routes.health.db_client") as mock_db:
+    with patch("src.api.health.db_client") as mock_db:
         # Simulate exception when pinging
         mock_db.client.admin.command.side_effect = Exception("Connection refused")
         
